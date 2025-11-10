@@ -1,274 +1,297 @@
 import tkinter as tk
-from tkinter import messagebox, filedialog
+from tkinter import simpledialog, messagebox
+import time
+import threading
 
-# ------------------ GLOBALS ------------------
-note_positions = {}
-active_notes = {}
-note_length = 120
-grid_step = 100
-current_time_x = 0
-playing = False
-tempo_bpm = 90
 
-dragging_note = None
-resizing_note = None
-drag_start_x = 0
-note_original_coords = None
-note_y_fixed = None
-dragging_playhead = False
-
-note_colors = {}
-base_colors = [
-    "#4CAF50", "#2196F3", "#FF9800",
-    "#9C27B0", "#E91E63", "#00BCD4", "#8BC34A"
+# ---------------- CONFIG ----------------
+PITCHES = [
+    "C6","B5","A#5","A5","G#5","G5","F#5","F5","E5","D#5","D5","C#5",
+    "C5","B4","A#4","A4","G#4","G4","F#4","F4","E4","D#4","D4","C#4","C4"
 ]
+ROW_H = 26
+KEY_W = 70
+GRID_STEP = 64
+NOTE_MIN_W = 32
+NOTE_H = ROW_H - 4
+PLAY_BPM = 90   # fixed BPM (tempo control removed as requested)
+SCENE_WIDTH = 4000
 
-selected_note = None
 
-# ------------------ FUNCTIONS ------------------
+# ---------------- MAIN APP ----------------
+class SingItClanker(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Sing it Clanker — AI Piano Roll")
+        self.geometry("1100x650")
+        self.config(bg="#1a1a1a")
 
-def generate_song():
-    lyrics = lyrics_box.get("1.0", tk.END).strip()
-    if not lyrics:
-        messagebox.showwarning("No Lyrics", "Please enter or load some lyrics first.")
-        return
-    messagebox.showinfo("AI Singing", f"AI will sing these lyrics:\n\n{lyrics[:200]}...")
 
-def load_lyrics():
-    file_path = filedialog.askopenfilename(
-        title="Open Lyrics File",
-        filetypes=(("Text Files", "*.txt"), ("All Files", "*.*"))
-    )
-    if file_path:
-        with open(file_path, "r", encoding="utf-8") as f:
-            lyrics_box.delete("1.0", tk.END)
-            lyrics_box.insert(tk.END, f.read())
+        # Toolbar (play/stop only)
+        toolbar = tk.Frame(self, bg="#111")
+        toolbar.pack(side="top", fill="x")
 
-def get_note_color(note):
-    if note not in note_colors:
-        idx = len(note_colors) % len(base_colors)
-        note_colors[note] = base_colors[idx]
-    return note_colors[note]
 
-def create_or_move_note(note):
-    global current_time_x
-    pressed_note_label.config(text=f"🎹 You pressed: {note}")
+        tk.Button(toolbar, text="Play", command=self.play).pack(side="left", padx=5)
+        tk.Button(toolbar, text="Stop", command=self.stop).pack(side="left", padx=5)
 
-    y = note_positions[note]
-    grid_x = (current_time_x // grid_step) * grid_step
-    key = (note, grid_x)
 
-    if key in active_notes:
-        return
+        # Piano + Canvas frame
+        frame = tk.Frame(self)
+        frame.pack(side="top", fill="both", expand=True)
 
-    color = get_note_color(note)
-    rect = piano_roll.create_rectangle(
-        grid_x, y - 8, grid_x + note_length, y + 8,
-        fill=color, outline="black", tags=("note", note)
-    )
-    active_notes[key] = rect
-    bind_note_events(rect, note)
-    current_time_x += note_length // 2
-    draw_playhead()
 
-def bind_note_events(rect, note):
-    piano_roll.tag_bind(rect, "<Button-1>", lambda e, r=rect, n=note: start_drag(e, r, n))
-    piano_roll.tag_bind(rect, "<B1-Motion>", lambda e, r=rect: do_drag(e, r))
-    piano_roll.tag_bind(rect, "<ButtonRelease-1>", lambda e, r=rect: stop_drag(e, r))
-    piano_roll.tag_bind(rect, "<Button-3>", lambda e, r=rect: start_resize(e, r))
-    piano_roll.tag_bind(rect, "<B3-Motion>", lambda e, r=rect: do_resize(e, r))
-    piano_roll.tag_bind(rect, "<ButtonRelease-3>", lambda e, r=rect: stop_resize(e, r))
-    piano_roll.tag_bind(rect, "<Double-Button-3>", lambda e, r=rect: delete_note(r))
+        self.piano = tk.Canvas(frame, width=KEY_W, bg="#e0e0e0", highlightthickness=0)
+        self.piano.pack(side="left", fill="y")
 
-def start_drag(event, rect, note):
-    global dragging_note, drag_start_x, note_original_coords, note_y_fixed, selected_note
-    dragging_note = rect
-    selected_note = rect
-    highlight_selected(rect)
-    drag_start_x = event.x
-    note_original_coords = piano_roll.coords(rect)
-    note_y_fixed = (note_original_coords[1] + note_original_coords[3]) / 2  # lock Y center
 
-def do_drag(event, rect):
-    if not dragging_note:
-        return
-    dx = event.x - drag_start_x
-    x1, y1, x2, y2 = note_original_coords
-    piano_roll.coords(rect, x1 + dx, note_y_fixed - 8, x2 + dx, note_y_fixed + 8)
+        self.canvas = tk.Canvas(frame, bg="#1f1f1f",
+                                scrollregion=(0,0,SCENE_WIDTH,len(PITCHES)*ROW_H))
+        self.canvas.pack(side="left", fill="both", expand=True)
 
-def stop_drag(event, rect):
-    global dragging_note
-    dragging_note = None
 
-def start_resize(event, rect):
-    global resizing_note, resize_start_x, note_original_coords
-    resizing_note = rect
-    resize_start_x = event.x
-    note_original_coords = piano_roll.coords(rect)
+        vbar = tk.Scrollbar(frame, orient="vertical", command=self.canvas.yview)
+        hbar = tk.Scrollbar(frame, orient="horizontal", command=self.canvas.xview)
+        self.canvas.config(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
+        vbar.pack(side="right", fill="y")
+        hbar.pack(side="bottom", fill="x")
 
-def do_resize(event, rect):
-    if not resizing_note:
-        return
-    dx = event.x - resize_start_x
-    x1, y1, x2, y2 = note_original_coords
-    new_x2 = max(x1 + 20, x2 + dx)
-    piano_roll.coords(rect, x1, y1, new_x2, y2)
 
-def stop_resize(event, rect):
-    global resizing_note
-    resizing_note = None
+        # Bindings (notes and UI)
+        self.canvas.bind("<Button-3>", self.add_note)                 # right-click add note
+        self.canvas.bind("<Button-1>", self.on_left_down)            # left down (notes or playline)
+        self.canvas.bind("<B1-Motion>", self.on_drag)                # left drag (notes or playline)
+        self.canvas.bind("<ButtonRelease-1>", self.on_left_up)       # left release
+        self.canvas.bind("<Double-1>", self.edit_lyric)              # double-click edit lyric
+        self.bind("<Delete>", self.delete_selected)                  # delete key
 
-def delete_note(rect):
-    """Delete selected note."""
-    piano_roll.delete(rect)
-    for key, val in list(active_notes.items()):
-        if val == rect:
-            del active_notes[key]
-            break
 
-def highlight_selected(rect):
-    """Show visual highlight for selected note."""
-    for _, r in active_notes.items():
-        piano_roll.itemconfig(r, width=1)
-    piano_roll.itemconfig(rect, width=3)
+        # State
+        self.notes = {}           # rect_id -> {"text": text_id, "row": row}
+        self.selected = None
+        self.drag_mode = None     # "move" or "resize"
+        self.play_line = None
+        self.playing = False
+        self.play_thread = None
+        self.play_x = 0.0
+        self.play_dragging = False   # when user drags the playhead
 
-def draw_piano_keys():
-    piano_canvas.delete("all")
-    note_positions.clear()
 
-    white_notes = ["C", "D", "E", "F", "G", "A", "B"]
-    all_notes = []
-    for octave in range(6, 3, -1):  # B6 down to E4
-        for n in white_notes:
-            all_notes.append(f"{n}{octave}")
-            if n in ["C", "D", "F", "G", "A"]:
-                all_notes.append(f"{n}#{octave}")
+        # Draw
+        self.draw_piano()
+        self.draw_grid()
+        # create playline ready (visible)
+        self.play_line = self.canvas.create_line(self.play_x, 0, self.play_x, len(PITCHES)*ROW_H,
+                                                 fill="red", width=2, tags=("playhead",))
 
-    y_pos = 0
-    for note in all_notes:
-        is_black = "#" in note
-        color = "black" if is_black else "white"
-        text_color = "white" if is_black else "black"
-        h = 20
-        piano_canvas.create_rectangle(0, y_pos, 80, y_pos + h, fill=color, outline="gray")
-        piano_canvas.create_text(40, y_pos + h / 2, text=note, fill=text_color, font=("Arial", 9))
-        rect = piano_canvas.create_rectangle(0, y_pos, 80, y_pos + h, outline="", fill="", tags="key")
-        piano_canvas.tag_bind(rect, "<Button-1>", lambda e, n=note: create_or_move_note(n))
-        note_positions[note] = y_pos + h / 2
-        y_pos += h
 
-def draw_grid():
-    piano_roll.delete("grid")
-    for x in range(0, 4000, grid_step):
-        piano_roll.create_line(x, 0, x, 2000, fill="#eee", tags="grid")
-    for y in note_positions.values():
-        piano_roll.create_line(0, y, 4000, y, fill="#f2f2f2", tags="grid")
+        # Info footer
+        self.status = tk.Label(self, text="Right-click add note | Double-click edit lyric | Drag red line to move playhead",
+                               bg="#111", fg="white", anchor="w")
+        self.status.pack(side="bottom", fill="x")
 
-def draw_playhead():
-    piano_roll.delete("playhead")
-    playhead = piano_roll.create_line(current_time_x, 0, current_time_x, 2000, fill="red", width=2, tags="playhead")
-    piano_roll.tag_bind(playhead, "<Button-1>", start_playhead_drag)
-    piano_roll.tag_bind(playhead, "<B1-Motion>", do_playhead_drag)
-    piano_roll.tag_bind(playhead, "<ButtonRelease-1>", stop_playhead_drag)
 
-def start_playhead_drag(event):
-    global dragging_playhead
-    dragging_playhead = True
-    update_playhead_position(event.x)
+    # ---------------- DRAWING ----------------
+    def draw_piano(self):
+        self.piano.delete("all")
+        y = 0
+        for p in PITCHES:
+            color = "#fff" if "#" not in p else "#d0d0d0"
+            self.piano.create_rectangle(0, y, KEY_W, y+ROW_H, fill=color, outline="#aaa")
+            self.piano.create_text(KEY_W/2, y+ROW_H/2, text=p, font=("Arial",9))
+            y += ROW_H
 
-def do_playhead_drag(event):
-    if dragging_playhead:
-        update_playhead_position(event.x)
 
-def stop_playhead_drag(event):
-    global dragging_playhead
-    dragging_playhead = False
+    def draw_grid(self):
+        self.canvas.delete("grid")
+        for i in range(len(PITCHES)):
+            y = i * ROW_H
+            fill = "#222" if i % 2 == 0 else "#242424"
+            self.canvas.create_rectangle(0, y, SCENE_WIDTH, y+ROW_H, fill=fill, outline="", tags="grid")
+        for x in range(0, SCENE_WIDTH, GRID_STEP):
+            self.canvas.create_line(x, 0, x, len(PITCHES)*ROW_H, fill="#333", tags="grid")
 
-def update_playhead_position(x):
-    global current_time_x
-    current_time_x = x
-    draw_playhead()
 
-def toggle_play():
-    global playing
-    playing = not playing
-    play_btn.config(text="Stop" if playing else "Play")
-    if playing:
-        move_playhead()
+    def snap_x(self, x):
+        # snap to GRID_STEP
+        return int(round(x / GRID_STEP)) * GRID_STEP
 
-def move_playhead():
-    global current_time_x
-    if not playing:
-        return
-    current_time_x += 5
-    draw_playhead()
-    root.after(int(60000 / tempo_bpm / 4), move_playhead)
 
-def delete_selected(event=None):
-    """Delete selected note with Delete key."""
-    global selected_note
-    if selected_note:
-        delete_note(selected_note)
-        selected_note = None
+    def snap_y(self, y):
+        return int(y // ROW_H) * ROW_H
 
-# ------------------ MAIN WINDOW ------------------
 
-root = tk.Tk()
-root.title("🎵 AI Singing — Piano Roll Editor")
-root.geometry("1200x700")
-root.configure(bg="#f5f5f5")
+    # ---------------- NOTES ----------------
+    def add_note(self, event):
+        x = self.snap_x(self.canvas.canvasx(event.x))
+        y = self.snap_y(self.canvas.canvasy(event.y))
+        rect = self.canvas.create_rectangle(x, y+2, x+GRID_STEP, y+NOTE_H+2,
+                                            fill="#4fc3f7", outline="#003c46", width=2, tags=("note",))
+        text = self.canvas.create_text(x + GRID_STEP/2, y+NOTE_H/2+2, text="", fill="#003c46", font=("Arial",10), tags=("note_text",))
+        self.notes[rect] = {"text": text, "row": int(y//ROW_H)}
+        self.select(rect)
 
-root.bind("<Delete>", delete_selected)
 
-# Header
-tk.Label(root, text="AI Singing — Piano Roll Editor", font=("Arial", 16, "bold"), bg="#f5f5f5").pack(pady=5)
+    def select(self, rect):
+        # visually indicate selection
+        if self.selected and self.selected in self.canvas.find_all():
+            try:
+                self.canvas.itemconfig(self.selected, width=1)
+            except Exception:
+                pass
+        self.selected = rect
+        if rect:
+            self.canvas.tag_raise(rect)
+            self.canvas.itemconfig(rect, width=3)
 
-lyrics_box = tk.Text(root, wrap="word", font=("Arial", 12), height=4)
-lyrics_box.pack(fill="x", padx=20, pady=10)
 
-controls = tk.Frame(root, bg="#f5f5f5")
-controls.pack()
+    def edit_lyric(self, event):
+        x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+        hits = self.canvas.find_overlapping(x, y, x, y)
+        for item in hits:
+            if item in self.notes:
+                text_id = self.notes[item]["text"]
+                cur_text = self.canvas.itemcget(text_id, "text")
+                new = simpledialog.askstring("Edit Lyric", "Enter lyric:", initialvalue=cur_text, parent=self)
+                if new is not None:
+                    self.canvas.itemconfig(text_id, text=new)
+                return
 
-play_btn = tk.Button(controls, text="Play", width=10, command=toggle_play)
-play_btn.pack(side="left", padx=5)
 
-tk.Label(controls, text="Tempo (BPM):", bg="#f5f5f5").pack(side="left")
-tempo_spin = tk.Spinbox(controls, from_=60, to=200, width=5)
-tempo_spin.pack(side="left", padx=5)
+    # ---------------- DRAGGING NOTES ----------------
+    def on_left_down(self, e):
+        """
+        Left button down: either start dragging playhead if clicked on it,
+        or start note selection/move/resize.
+        """
+        x = self.canvas.canvasx(e.x); y = self.canvas.canvasy(e.y)
+        hits = self.canvas.find_overlapping(x, y, x, y)
 
-tk.Button(controls, text="Load Lyrics", command=load_lyrics, width=12).pack(side="left", padx=5)
-tk.Button(controls, text="Generate Song", command=generate_song, width=15, bg="#0078D7", fg="white").pack(side="left", padx=10)
 
-pressed_note_label = tk.Label(root, text="🎹 Press a piano key", font=("Arial", 11, "italic"), bg="#f5f5f5")
-pressed_note_label.pack(pady=5)
+        # 1) if playhead was clicked, start dragging playhead (priority)
+        if self.play_line and self.play_line in hits:
+            self.play_dragging = True
+            # stop playback while dragging
+            self.stop()
+            return
 
-main_frame = tk.Frame(root)
-main_frame.pack(expand=True, fill="both", padx=10, pady=10)
 
-piano_canvas = tk.Canvas(main_frame, width=80, bg="#dcdcdc")
-piano_canvas.pack(side="left", fill="y")
+        # 2) otherwise check for note hit (preserve full note adjust behavior)
+        rect = next((i for i in hits if i in self.notes), None)
+        if rect:
+            self.select(rect)
+            x1, y1, x2, y2 = self.canvas.coords(rect)
+            # near right edge? treat as resize
+            if (x2 - 8) <= x <= (x2 + 4):
+                self.drag_mode = "resize"
+            else:
+                self.drag_mode = "move"
+            self.start_x, self.start_y = x, y
+            self.orig_coords = (x1, y1, x2, y2)
+        else:
+            # click empty space -> deselect
+            self.select(None)
 
-roll_frame = tk.Frame(main_frame)
-roll_frame.pack(side="left", fill="both", expand=True)
 
-x_scroll = tk.Scrollbar(roll_frame, orient="horizontal")
-y_scroll = tk.Scrollbar(roll_frame, orient="vertical")
+    def on_drag(self, e):
+        x = self.canvas.canvasx(e.x); y = self.canvas.canvasy(e.y)
 
-piano_roll = tk.Canvas(
-    roll_frame, bg="white",
-    scrollregion=(0, 0, 4000, 2000),
-    xscrollcommand=x_scroll.set,
-    yscrollcommand=y_scroll.set
-)
-x_scroll.config(command=piano_roll.xview)
-y_scroll.config(command=piano_roll.yview)
-x_scroll.pack(side="bottom", fill="x")
-y_scroll.pack(side="right", fill="y")
-piano_roll.pack(side="left", fill="both", expand=True)
 
-# Init
-draw_piano_keys()
-draw_grid()
-draw_playhead()
+        # if dragging playhead, update its x and visual immediately
+        if self.play_dragging:
+            self.play_x = max(0.0, min(SCENE_WIDTH, x))
+            self.canvas.coords(self.play_line, self.play_x, 0, self.play_x, len(PITCHES)*ROW_H)
+            # optionally update status
+            self.status.config(text=f"Playhead px={int(self.play_x)}")
+            return
 
-root.mainloop()
+
+        # else, handle note move/resize as before
+        if not self.selected or not self.drag_mode:
+            return
+
+
+        dx = x - self.start_x
+        dy = y - self.start_y
+        x1, y1, x2, y2 = self.orig_coords
+        rect = self.selected
+        txt = self.notes[rect]["text"]
+
+
+        if self.drag_mode == "move":
+            new_x = self.snap_x(x1 + dx)
+            new_y = self.snap_y(y1 + dy)
+            w = x2 - x1
+            new_x = max(0, min(SCENE_WIDTH - w, new_x))
+            new_y = max(0, min(len(PITCHES)*ROW_H - NOTE_H, new_y))
+            self.canvas.coords(rect, new_x, new_y, new_x + w, new_y + NOTE_H)
+            self.canvas.coords(txt, new_x + w/2, new_y + NOTE_H/2)
+        else:  # resize
+            new_x2 = max(x1 + NOTE_MIN_W, self.snap_x(x2 + dx))
+            new_x2 = min(SCENE_WIDTH, new_x2)
+            self.canvas.coords(rect, x1, y1, new_x2, y2)
+            self.canvas.coords(txt, (x1 + new_x2) / 2, y1 + NOTE_H/2)
+
+
+    def on_left_up(self, e):
+        # stop any note drag or playhead drag
+        self.drag_mode = None
+        if self.play_dragging:
+            self.play_dragging = False
+            # update status after dropping playhead
+            self.status.config(text=f"Playhead set to px={int(self.play_x)}")
+
+
+    def delete_selected(self, _=None):
+        if not self.selected: return
+        rect = self.selected
+        text_id = self.notes[rect]["text"]
+        self.canvas.delete(rect)
+        self.canvas.delete(text_id)
+        del self.notes[rect]
+        self.selected = None
+
+
+    # ---------------- PLAYBACK ----------------
+    def play(self):
+        if self.playing:
+            return
+        self.playing = True
+        # ensure play line present
+        if not self.play_line:
+            self.play_line = self.canvas.create_line(self.play_x, 0, self.play_x, len(PITCHES)*ROW_H,
+                                                     fill="red", width=2, tags=("playhead",))
+        # run loop in background
+        self.play_thread = threading.Thread(target=self.play_loop, daemon=True)
+        self.play_thread.start()
+
+
+    def stop(self):
+        self.playing = False
+
+
+    def play_loop(self):
+        bpm = PLAY_BPM
+        beat_time = 60.0 / bpm
+        # compute start_time such that existing play_x positions correctly
+        start_time = time.time() - (self.play_x / GRID_STEP) * beat_time
+        while self.playing:
+            elapsed = time.time() - start_time
+            self.play_x = (elapsed / beat_time) * GRID_STEP
+            if self.play_x > SCENE_WIDTH:
+                self.playing = False
+                break
+            # update line on main thread via after
+            px = self.play_x
+            self.canvas.after(0, lambda p=px: self.canvas.coords(self.play_line, p, 0, p, len(PITCHES)*ROW_H))
+            time.sleep(0.02)
+        self.playing = False
+
+
+# ---------------- RUN ----------------
+if __name__ == "__main__":
+    app = SingItClanker()
+    app.mainloop()
+
+
+
